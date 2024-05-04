@@ -40,8 +40,8 @@ var invoke = require('./app/invoke-transaction.js');
 var query = require('./app/query.js');
 var host = process.env.HOST || hfc.getConfigSetting('host');
 var port = process.env.PORT || hfc.getConfigSetting('port');
-const crypto = require('crypto');
-const sha256Hash = crypto.createHash('sha256');         //sha256 Object
+const crypto = require('crypto');       //sha256 Object
+const { transporter } = require('./sendMail.js')
 var client = run()
 app.options('*', cors());
 app.use(cors());
@@ -56,12 +56,12 @@ app.set('secret', 'thisismysecret');
 app.use(expressJWT({
 	secret: 'thisismysecret'
 }).unless({
-	path: ['/users/login', '/users/register']
+	path: ['/users/login', '/users/register', '/users/validateOTP']
 }));
 app.use(bearerToken());
 app.use(function (req, res, next) {
 	logger.debug(' ------>>>>>> new request for %s', req.originalUrl);
-	if (req.originalUrl.indexOf('/users/login') >= 0) {
+	if (req.originalUrl.indexOf('/users') >= 0) {
 		return next();
 	}
 
@@ -80,7 +80,7 @@ app.use(function (req, res, next) {
 			// for the downstream code to use
 			req.id = decoded.id;
 			req.iat = decoded.iat;
-			logger.debug(util.format('Decoded from JWT token: username - %s, orgname - %s', decoded.username, decoded.orgName));
+			logger.debug(util.format('Decoded from JWT token: id - %s, iat - %s', decoded.id, decoded.iat));
 			return next();
 		}
 	});
@@ -112,11 +112,32 @@ async function convertFromAuthToHyper(req) {
 	}
 
 }
+async function sendOTP(email, OTP) {
+	try {
+		const mailOptions = {
+			from: "chitkenkhoi@gmai.com",
+			to: [email],
+			subject: "OTP for authentication",
+			text: `Your OTP code is ${OTP}`,
+		}
+		await transporter.sendMail(mailOptions);
+		return true
+	} catch (error) {
+		console.log(error)
+		return false
+	}
+
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 ///////////////////////// REST ENDPOINTS START HERE ///////////////////////////
 ///////////////////////////////////////////////////////////////////////////////
 // Register and enroll user
+app.get('/token/validate', async function (req, res) {
+	res.json({
+		message: "Valid token"
+	})
+})
 app.post('/users/register', async function (req, res) {
 	var username = req.body.username;
 	var orgName = req.body.orgName;
@@ -148,28 +169,122 @@ app.post('/users/register', async function (req, res) {
 	}
 
 });
-//Login to an existing user
-app.post('/users/login', async function (req, res) {
-	var credential = req.body.credential
-	sha256Hash.update(req.body.password);
-	var hash_password = sha256Hash.digest('hex');
-	console.log("This is", hash_password);
-	const collection = (await client).db("Autheticate").collection("accounts")
-	await collection.findOne({ credential: credential, hash_password: hash_password }, (err, document) => {
-		if (err) {
-			res.json(getErrorMessage('\'credential or password\''))
-			return
+app.post('users/resendOTP', async function (req, res) {
+	try {
+		const email = req.body.email
+		const db = (await client).db("Autheticate")
+		const document = await db.collection("OTPcode").findOne({ credential: email })
+		if (document) {
+			await db.collection("OTPcode").deleteOne({ _id: document._id })
 		}
-		var token = jwt.sign({
-			exp: Math.floor(Date.now() / 1000) + parseInt(hfc.getConfigSetting('jwt_expiretime')),
-			id: document._id
-		}, app.get('secret'));
-		var response = {
-			message: "Auth ok",
-			token: token
+		const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+		let otp = '';
+		for (let i = 0; i < 6; i++) {
+			otp += chars[Math.floor(Math.random() * chars.length)];
+		}
+		if (sendOTP(email, otp)) {
+			const insertOTP = async () => {
+				const col = db.collection("OTPcode")
+				const doc = { credential: email, OTP: otp }
+				const result = await col.insertOne(doc)
+			}
+			insertOTP();
+			var response = {
+				message: "OTP sent"
+			}
+		} else {
+			var response = {
+				message: "OTP not sent"
+			}
 		}
 		res.json(response)
-	})
+	} catch (e) {
+		console.log(e)
+	}
+})
+app.post('/users/validateOTP', async function (req, res) {
+	try {
+		const OTP = req.body.OTP
+		const email = req.body.email
+		const db = (await client).db("Autheticate")
+
+		var doc = await db.collection("OTPcode").findOne({ credential: email, OTP: OTP });
+		if (doc) {
+			const result = await db.collection("accounts").findOne({ credential: email })
+			await db.collection("OTPcode").deleteOne({ _id: doc._id })
+			var token = jwt.sign({
+				exp: Math.floor(Date.now() / 1000) + parseInt(hfc.getConfigSetting('jwt_expiretime')),
+				id: result._id
+			}, app.get('secret'));
+			var response = {
+				message: "Auth ok",
+				token: token
+			}
+		} else {
+			var response = {
+				message: "OTP is wrong"
+			}
+		}
+		res.json(response)
+
+	} catch (e) {
+		console.log(e)
+	}
+})
+//Login to an existing user
+app.post('/users/login', async function (req, res) {
+	try {
+		var credential = req.body.credential
+		const sha256Hash = crypto.createHash('sha256');
+		sha256Hash.update(req.body.password);
+		var hash_password = sha256Hash.digest('hex');
+		console.log("This is", hash_password);
+		const collection = (await client).db("Autheticate").collection("accounts")
+		await collection.findOne({ credential: credential, hash_password: hash_password }, (err, document) => {
+			if (!document) {
+				res.json(getErrorMessage('\'credential or password\''))
+				return
+			}
+			const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+			let otp = '';
+			for (let i = 0; i < 6; i++) {
+				otp += chars[Math.floor(Math.random() * chars.length)];
+			}
+			if (sendOTP(credential, otp)) {
+				const insertOTP = async () => {
+					const col = (await client).db("Autheticate").collection("OTPcode")
+					var doc = await col.findOne({ credential: credential });
+					if (doc) {
+
+					} else {
+						await col.deleteOne({ _id: document._id });
+					}
+					doc = { credential: credential, OTP: otp }
+					const result = await col.insertOne(doc)
+				}
+				insertOTP();
+				var response = {
+					message: "OTP sent"
+				}
+			} else {
+				var response = {
+					message: "OTP not sent"
+				}
+			}
+			// var token = jwt.sign({
+			// 	exp: Math.floor(Date.now() / 1000) + parseInt(hfc.getConfigSetting('jwt_expiretime')),
+			// 	id: document._id
+			// }, app.get('secret'));
+			// var response = {
+			// 	message: "Auth ok",
+			// 	token: token
+			// }
+			res.json(response)
+		})
+	} catch (er) {
+		console.log(er)
+	}
+
 
 	// var username = req.body.username;
 	// var orgName = req.body.orgName;

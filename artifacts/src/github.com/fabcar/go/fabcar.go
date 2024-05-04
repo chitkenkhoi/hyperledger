@@ -45,7 +45,9 @@ type Car struct {
 	Colour string `json:"colour"`
 	Owner  string `json:"owner"`
 }
-
+type ContractID struct {
+	Id string `json:"id"`
+}
 type carPrivateDetails struct {
 	Owner string `json:"owner"`
 	Price string `json:"price"`
@@ -578,11 +580,18 @@ func (S *SmartContract) queryContractsByStakeholders(APIstub shim.ChaincodeStubI
 		assetAsBytes, err := APIstub.GetState(id)
 
 		if bArrayMemberAlreadyWritten == true {
-			newBytes := append([]byte(","), assetAsBytes...)
+			Id := ContractID{Id: id}
+			IdAsByte, _ := json.Marshal(Id)
+			newBytes := append([]byte(","), IdAsByte...)
 			contracts = append(contracts, newBytes...)
-
+			newBytes = append([]byte(","), assetAsBytes...)
+			contracts = append(contracts, newBytes...)
 		} else {
 			// newBytes := append([]byte(","), carsAsBytes...)
+			Id := ContractID{Id: id}
+			IdAsByte, _ := json.Marshal(Id)
+			contracts = append(contracts, IdAsByte...)
+			assetAsBytes = append([]byte(","), assetAsBytes...)
 			contracts = append(contracts, assetAsBytes...)
 		}
 
