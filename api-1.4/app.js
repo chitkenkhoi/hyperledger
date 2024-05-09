@@ -27,7 +27,7 @@ var jwt = require('jsonwebtoken');
 var bearerToken = require('express-bearer-token');
 var cors = require('cors');
 const prometheus = require('prom-client')
-
+const ethers = require('ethers');
 require('./config.js');
 var hfc = require('fabric-client');
 
@@ -56,7 +56,7 @@ app.set('secret', 'thisismysecret');
 app.use(expressJWT({
 	secret: 'thisismysecret'
 }).unless({
-	path: ['/users/login', '/users/register', '/users/validateOTP']
+	path: ['/users/login', '/users/register', '/users/login/validateOTP', '/users/register/validateOTP', 'users/resendOTP']
 }));
 app.use(bearerToken());
 app.use(function (req, res, next) {
@@ -105,8 +105,11 @@ async function convertFromAuthToHyper(req) {
 	try {
 		const collection = (await client).db("Autheticate").collection("hyperledger_accounts")
 		const document = await collection.findOne({ acc_id: req.id });
-		console.log(document, "this is my doc")
-		return { username: document.username, orgname: document.Orgid }
+		if (document) {
+			return { username: document.username, orgname: document.Orgid }
+		}
+		return false
+
 	} catch (err) {
 		console.error('Error:', err);
 	}
@@ -139,34 +142,127 @@ app.get('/token/validate', async function (req, res) {
 	})
 })
 app.post('/users/register', async function (req, res) {
-	var username = req.body.username;
-	var orgName = req.body.orgName;
-	logger.debug('End point : /users/register');
-	logger.debug('User name : ' + username);
-	logger.debug('Org name  : ' + orgName);
-	if (!username) {
-		res.json(getErrorMessage('\'username\''));
-		return;
+	try {
+		var credential = req.body.email
+		const db = (await client).db("Autheticate")
+		const document = await db.collection("accounts").findOne({ credential: credential })
+		if (document) {
+			var response = {
+				message: "Email has been registered"
+			}
+			res.json(response)
+			return
+		}
+		const chars = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+		let otp = '';
+		for (let i = 0; i < 6; i++) {
+			otp += chars[Math.floor(Math.random() * chars.length)];
+		}
+		if (await sendOTP(credential, otp)) {
+			const insertOTP = async () => {
+				const col = db.collection("OTPcode")
+				const doc = { credential: credential, OTP: otp }
+				const result = await col.insertOne(doc)
+			}
+			insertOTP();
+			var response = {
+				message: "OTP sent"
+			}
+			const cleanOldDoc = await db.collection("CacheRegister").deleteMany({ credential: credential })        //xoá hết mk cũ trong cache
+			const sha256Hash = crypto.createHash('sha256');
+			sha256Hash.update(req.body.password);
+			var hash_password = sha256Hash.digest('hex');
+			const doc = { credential: credential, hash_password: hash_password }
+			const result = await db.collection("CacheRegister").insertOne(doc)
+		} else {
+			var response = {
+				message: "OTP not sent"
+			}
+		}
+		res.json(response)
+	} catch (e) {
+		console.log(e)
 	}
-	if (!orgName) {
-		res.json(getErrorMessage('\'orgName\''));
-		return;
+})
+app.post('/users/register/validateOTP', async function (req, res) {
+	try {
+		const OTP = req.body.OTP
+		const email = req.body.email
+		const db = (await client).db("Autheticate")
+
+		var doc = await db.collection("OTPcode").findOne({ credential: email, OTP: OTP });
+		if (doc) {
+			await db.collection("OTPcode").deleteMany({ credential: email })
+			const cache_doc = await db.collection("CacheRegister").findOne({ credential: email })                  //tìm mật khẩu
+			const randomWallet = ethers.Wallet.createRandom();
+			const publickey = randomWallet.address;
+			const privatekey = randomWallet.privateKey;
+
+			var document = { public_key: publickey, private_key: privatekey, credential: email, hash_password: cache_doc.hash_password }
+			const result = await db.collection("accounts").insertOne(document)
+			var token = jwt.sign({
+				exp: Math.floor(Date.now() / 1000) + parseInt(hfc.getConfigSetting('jwt_expiretime')),
+				id: result._id
+			}, app.get('secret'));
+			var response = {
+				message: "Auth ok",
+				token: token
+			}
+			await db.collection("CacheRegister").deleteMany({ credential: email })
+		} else {
+			var response = {
+				message: "OTP is wrong"
+			}
+		}
+		res.json(response)
+
+	} catch (e) {
+		console.log(e)
 	}
-	var token = jwt.sign({
-		exp: Math.floor(Date.now() / 1000) + parseInt(hfc.getConfigSetting('jwt_expiretime')),
-		username: username,
-		orgName: orgName
-	}, app.get('secret'));
-	let response = await helper.getRegisteredUser(username, orgName, true);
-	logger.debug('-- returned from registering the username %s for organization %s', username, orgName);
-	if (response && typeof response !== 'string') {
-		logger.debug('Successfully registered the username %s for organization %s', username, orgName);
-		response.token = token;
-		res.json(response);
-	} else {
-		logger.debug('Failed to register the username %s for organization %s with::%s', username, orgName, response);
-		res.json({ success: false, message: response });
+})
+app.post('/registerHP', async function (req, res) {
+	try {
+		const db = (await client).db("Autheticate")
+		const doc = await db.collection("hyperledger_accounts").findOne({ acc_id: req.id })
+		if (doc) {
+			var re = {
+				message: "Registered"
+			}
+			res.json(re)
+			return
+		}
+		var username = req.body.username;
+		var orgName = req.body.orgName;
+		logger.debug('End point : /users/register');
+		logger.debug('User name : ' + username);
+		logger.debug('Org name  : ' + orgName);
+		if (!username) {
+			res.json(getErrorMessage('\'username\''));
+			return;
+		}
+		if (!orgName) {
+			res.json(getErrorMessage('\'orgName\''));
+			return;
+		}
+		let response = await helper.getRegisteredUser(username, orgName, true);
+		logger.debug('-- returned from registering the username %s for organization %s', username, orgName);
+		if (response && typeof response !== 'string') {
+			logger.debug('Successfully registered the username %s for organization %s', username, orgName);
+			const docToInsert = { Orgid: orgName, acc_id: req.id, username: username };
+			const result = await db.collection("hyperledger_accounts").insertOne(docToInsert)
+			const r = {
+				success: true,
+				message: "Registered successfully"
+			}
+			res.json(r)
+		} else {
+			logger.debug('Failed to register the username %s for organization %s with::%s', username, orgName, response);
+			res.json({ success: false, message: response });
+		}
+	} catch (e) {
+		console.log(e)
 	}
+
 
 });
 app.post('users/resendOTP', async function (req, res) {
@@ -182,7 +278,7 @@ app.post('users/resendOTP', async function (req, res) {
 		for (let i = 0; i < 6; i++) {
 			otp += chars[Math.floor(Math.random() * chars.length)];
 		}
-		if (sendOTP(email, otp)) {
+		if (await sendOTP(email, otp)) {
 			const insertOTP = async () => {
 				const col = db.collection("OTPcode")
 				const doc = { credential: email, OTP: otp }
@@ -202,7 +298,7 @@ app.post('users/resendOTP', async function (req, res) {
 		console.log(e)
 	}
 })
-app.post('/users/validateOTP', async function (req, res) {
+app.post('/users/login/validateOTP', async function (req, res) {
 	try {
 		const OTP = req.body.OTP
 		const email = req.body.email
@@ -234,7 +330,7 @@ app.post('/users/validateOTP', async function (req, res) {
 //Login to an existing user
 app.post('/users/login', async function (req, res) {
 	try {
-		var credential = req.body.credential
+		var credential = req.body.email
 		const sha256Hash = crypto.createHash('sha256');
 		sha256Hash.update(req.body.password);
 		var hash_password = sha256Hash.digest('hex');
@@ -443,7 +539,13 @@ app.post('/channels/:channelName/chaincodes/:chaincodeName', async function (req
 	try {
 		logger.debug('==================== INVOKE ON CHAINCODE ==================');
 		const obj = await convertFromAuthToHyper(req)
-		console.log("this is obj", obj)
+		if (obj === false) {
+			var response = {
+				message: "Not register"
+			}
+			res.json(response)
+			return
+		}
 		var peers = req.body.peers;
 		var chaincodeName = req.params.chaincodeName;
 		var channelName = req.params.channelName;
@@ -469,11 +571,16 @@ app.post('/channels/:channelName/chaincodes/:chaincodeName', async function (req
 			res.json(getErrorMessage('\'args\''));
 			return;
 		}
-
-		const start = Date.now();
-		console.log("hello", obj.username, obj.orgname)
+		if (fcn === "signContract") {
+			args.splice(1, 0, obj.orgname)
+		} else if (fcn === "createContract") {
+			args.splice(3, 0, obj.orgname);
+		} else if (fcn === "updateContractStakeholders") {
+			args.splice(1, 0, obj.orgname)
+		} else if (fcn === "updateContractProducts" || fcn === "updateContractTerms") {
+			args.splice(1, 0, obj.orgname)
+		}
 		let message = await invoke.invokeChaincode(peers, channelName, chaincodeName, fcn, args, obj.username, obj.orgname);
-		const latency = Date.now() - start;
 
 
 		const response_payload = {
@@ -498,18 +605,25 @@ app.post('/channels/:channelName/chaincodes/:chaincodeName', async function (req
 app.get('/channels/:channelName/chaincodes/:chaincodeName', async function (req, res) {
 	logger.debug('==================== QUERY BY CHAINCODE ==================');
 	const obj = await convertFromAuthToHyper(req)
+	if (obj === false) {
+		var response = {
+			message: "Not register"
+		}
+		res.json(response)
+		return
+	}
 	var channelName = req.params.channelName;
 	var chaincodeName = req.params.chaincodeName;
 	let args = req.query.args;
 	let fcn = req.query.fcn;
 	let peer = req.query.peer;
 	if (fcn === "queryContractsByStakeholders") {
-		let result = args.substring(2, args.length - 2);
-		if (result !== obj.orgname) {
-			console.log(obj)
-			console.log("this is something", result, obj.orgname)
-			res.json(getErrorMessage("Can not query others stakeholders contract"))
-		}
+		var arr = [obj.orgname]
+		args = JSON.stringify(arr)
+	} else if (fcn === "queryContract") {
+		var arr = JSON.parse(args)
+		arr.splice(1, 0, obj.orgname)
+		args = JSON.stringify(arr)
 	}
 
 
@@ -517,6 +631,7 @@ app.get('/channels/:channelName/chaincodes/:chaincodeName', async function (req,
 	logger.debug('chaincodeName : ' + chaincodeName);
 	logger.debug('fcn : ' + fcn);
 	logger.debug('args : ' + args);
+	console.log("cos phai list ko ", typeof args === 'string')
 
 	if (!chaincodeName) {
 		res.json(getErrorMessage('\'chaincodeName\''));

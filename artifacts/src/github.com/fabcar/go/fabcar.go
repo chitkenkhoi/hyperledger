@@ -59,11 +59,11 @@ type carPrivateDetails struct {
 //	}
 type Contract struct {
 	Stakeholders []string `json:"stakeholders"`
-	Products     []string `json:"products`
+	Products     []string `json:"products"`
 	Terms        []string `json:"terms"`
 	Date         string   `json:"date"`
-	Name         string   `json:"name`
-	Sign         []string `json:sign`
+	Name         string   `json:"name"`
+	Sign         []string `json:"sign"`
 }
 
 // Init ;  Method for initializing smart contract
@@ -120,10 +120,15 @@ func (s *SmartContract) Invoke(APIstub shim.ChaincodeStubInterface) sc.Response 
 	// return shim.Error("Invalid Smart Contract function name.")
 }
 func (s *SmartContract) queryContract(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 1 {
-		return shim.Error("Incorrect number of arguments. Expecting 1")
+	if len(args) != 2 {
+		return shim.Error("Incorrect number of arguments. Expecting 2")
 	}
 	contractAsBytes, _ := APIstub.GetState(args[0])
+	contract := Contract{}
+	json.Unmarshal(contractAsBytes, &contract)
+	if contract.Stakeholders[0] != args[1] && contract.Stakeholders[1] != args[1] {
+		return shim.Error("Bad authentication")
+	}
 	return shim.Success(contractAsBytes)
 }
 func (s *SmartContract) queryCar(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
@@ -192,7 +197,7 @@ func (s *SmartContract) signContract(APIstub shim.ChaincodeStubInterface, args [
 	} else if contract.Stakeholders[1] == st {
 		contract.Sign[1] = "true"
 	} else {
-		return shim.Error("Not a valid stakeholders")
+		return shim.Error("Bad authentication")
 	}
 	contractAsBytes, _ = json.Marshal(contract)
 	APIstub.PutState(args[0], contractAsBytes)
@@ -203,22 +208,23 @@ func (s *SmartContract) updateContractStakeholders(APIstub shim.ChaincodeStubInt
 	if len(args) != 3 {
 		return shim.Error("Incorrect number of arguments. Expecting 3")
 	}
-
 	contractAsBytes, _ := APIstub.GetState(args[0])
 	contract := Contract{}
 	json.Unmarshal(contractAsBytes, &contract)
 	if checkSign(contract) {
 		return shim.Error("Can not modify a approved contract")
 	}
-	contract.Stakeholders[0] = args[1]
+	if contract.Stakeholders[0] != args[1] {
+		return shim.Error("Bad authentication")
+	}
 	contract.Stakeholders[1] = args[2]
 	contractAsBytes, _ = json.Marshal(contract)
 	APIstub.PutState(args[0], contractAsBytes)
 	return shim.Success(contractAsBytes)
 }
 func (s *SmartContract) updateContractName(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 2 {
-		return shim.Error("Incorrect number of arguments. Expecting 2")
+	if len(args) != 3 {
+		return shim.Error("Incorrect number of arguments. Expecting 3")
 	}
 
 	contractAsBytes, _ := APIstub.GetState(args[0])
@@ -227,14 +233,17 @@ func (s *SmartContract) updateContractName(APIstub shim.ChaincodeStubInterface, 
 	if checkSign(contract) {
 		return shim.Error("Can not modify a approved contract")
 	}
-	contract.Name = args[1]
+	if contract.Stakeholders[0] != args[1] {
+		return shim.Error("Bad authentication")
+	}
+	contract.Name = args[2]
 	contractAsBytes, _ = json.Marshal(contract)
 	APIstub.PutState(args[0], contractAsBytes)
 	return shim.Success(contractAsBytes)
 }
 func (s *SmartContract) updateContractDate(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
-	if len(args) != 2 {
-		return shim.Error("Incorrect number of arguments. Expecting 2")
+	if len(args) != 3 {
+		return shim.Error("Incorrect number of arguments. Expecting 3")
 	}
 
 	contractAsBytes, _ := APIstub.GetState(args[0])
@@ -243,15 +252,18 @@ func (s *SmartContract) updateContractDate(APIstub shim.ChaincodeStubInterface, 
 	if checkSign(contract) {
 		return shim.Error("Can not modify a approved contract")
 	}
-	contract.Date = args[1]
+	if contract.Stakeholders[0] != args[1] {
+		return shim.Error("Bad authentication")
+	}
+	contract.Date = args[2]
 	contractAsBytes, _ = json.Marshal(contract)
 	APIstub.PutState(args[0], contractAsBytes)
 	return shim.Success(contractAsBytes)
 }
 func (s *SmartContract) updateContractProducts(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
-	num1, _ := strconv.Atoi(args[1])
-	if len(args) != 2+num1 {
-		return shim.Error("Incorrect number of arguments. Expecting " + strconv.Itoa(num1+2))
+	num1, _ := strconv.Atoi(args[2]) //["Contract0","Org1","2","carrot1","carrot2"]
+	if len(args) != 3+num1 {
+		return shim.Error("Incorrect number of arguments. Expecting " + strconv.Itoa(num1+3))
 	}
 
 	contractAsBytes, _ := APIstub.GetState(args[0])
@@ -260,16 +272,19 @@ func (s *SmartContract) updateContractProducts(APIstub shim.ChaincodeStubInterfa
 	if checkSign(contract) {
 		return shim.Error("Can not modify a approved contract")
 	}
-	contract.Products = args[2:]
+	if contract.Stakeholders[0] != args[1] {
+		return shim.Error("Bad authentication")
+	}
+	contract.Products = args[3:]
 	contractAsBytes, _ = json.Marshal(contract)
 	APIstub.PutState(args[0], contractAsBytes)
 	return shim.Success(contractAsBytes)
 }
 func (s *SmartContract) updateContractTerms(APIstub shim.ChaincodeStubInterface, args []string) sc.Response {
 
-	num1, _ := strconv.Atoi(args[1])
-	if len(args) != 2+num1 {
-		return shim.Error("Incorrect number of arguments. Expecting " + strconv.Itoa(num1+2))
+	num1, _ := strconv.Atoi(args[2])
+	if len(args) != 3+num1 {
+		return shim.Error("Incorrect number of arguments. Expecting " + strconv.Itoa(num1+3))
 	}
 
 	contractAsBytes, _ := APIstub.GetState(args[0])
@@ -278,7 +293,10 @@ func (s *SmartContract) updateContractTerms(APIstub shim.ChaincodeStubInterface,
 	if checkSign(contract) {
 		return shim.Error("Can not modify a approved contract")
 	}
-	contract.Terms = args[2:]
+	if contract.Stakeholders[0] != args[1] {
+		return shim.Error("Bad authentication")
+	}
+	contract.Terms = args[3:]
 	contractAsBytes, _ = json.Marshal(contract)
 	APIstub.PutState(args[0], contractAsBytes)
 	return shim.Success(contractAsBytes)
